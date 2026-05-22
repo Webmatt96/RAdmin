@@ -1,0 +1,26 @@
+[server]
+host = 192.168.100.121
+port = 443
+log_level = DEBUG
+cert_file = server.crt
+key_file = server.key
+
+[client]
+log_level = DEBUG
+connectivity_check_interval = 60
+
+[credentials]
+account = xadmin
+# Replace this with your actual password after rotating it
+password = CHANGEME
+
+# Shared secret used to authenticate clients to the server.
+# Generate a strong value with: python -c "import secrets; print(secrets.token_hex(32))"
+# Both server and client must have the same value here.
+shared_secret = CHANGEME_GENERATE_WITH_SECRETS_MODULE
+
+[commands]
+# Map command names to PowerShell expressions executed on the server side
+application_log = Get-EventLog -LogName Application -Newest 10
+installroot_log = Get-EventLog -LogName "DoD-PKE InstallRoot" -Newest 10
+failover_cluster_validation = Test-Cluster
