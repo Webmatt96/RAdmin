@@ -16,14 +16,27 @@ import sys
 from config import CONFIG
 from commands import (
     get_available_commands,
+    help,
     test_connectivity,
     print_hosts_file,
     periodic_connectivity_check,
+    sys_info,
+    cpu_usage,
+    memory_usage,
+    disk_usage,
+    service_list,
+    service_status,
+    service_start,
+    service_stop,
+    tail_syslog,
+    tail_applog,
+    net_connections,
+    net_interfaces,
     application_log,
     installroot_log,
     reboot,
     failover_cluster_validation,
-    math
+    math,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -36,29 +49,53 @@ logging.basicConfig(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 SHARED_SECRET  = CONFIG.get('credentials', 'shared_secret').encode()
-RECONNECT_WAIT = 5   # seconds between reconnect attempts
+RECONNECT_WAIT = 5
 
 
 # ── Command dispatch ──────────────────────────────────────────────────────────
+# Commands that accept an optional argument are mapped to their function.
+# The dispatcher splits the command string on the first space and passes
+# the remainder as the argument.
 
 COMMAND_MAP = {
-    'application_log':           application_log,
-    'installroot_log':           installroot_log,
-    'reboot':                    reboot,
-    'failover_cluster_validation': failover_cluster_validation,
-    'math':                      math,
+    'help':                        lambda arg: help(),
+    'math':                        lambda arg: math(),
+    'sys_info':                    lambda arg: sys_info(),
+    'cpu_usage':                   lambda arg: cpu_usage(),
+    'memory_usage':                lambda arg: memory_usage(),
+    'disk_usage':                  lambda arg: disk_usage(),
+    'service_list':                lambda arg: service_list(),
+    'service_status':              lambda arg: service_status(arg),
+    'service_start':               lambda arg: service_start(arg),
+    'service_stop':                lambda arg: service_stop(arg),
+    'tail_syslog':                 lambda arg: tail_syslog(int(arg) if arg else 50),
+    'tail_applog':                 lambda arg: tail_applog(int(arg) if arg else 50),
+    'net_connections':             lambda arg: net_connections(),
+    'net_interfaces':              lambda arg: net_interfaces(),
+    'application_log':             lambda arg: application_log(),
+    'installroot_log':             lambda arg: installroot_log(),
+    'reboot':                      lambda arg: reboot(),
+    'failover_cluster_validation': lambda arg: failover_cluster_validation(),
 }
 
 
-def execute_command(command):
-    func = COMMAND_MAP.get(command.lower())
-    logging.debug(f"Executing command: {command}")
+def execute_command(command_str):
+    """
+    Parse command string, dispatch to the right function.
+    Format: '<command>' or '<command> <argument>'
+    """
+    parts     = command_str.strip().split(' ', 1)
+    command   = parts[0].lower()
+    argument  = parts[1].strip() if len(parts) > 1 else None
+
+    func = COMMAND_MAP.get(command)
     if func:
+        logging.debug(f"Executing: {command} | arg: {argument}")
         try:
-            return func()
+            return func(argument)
         except Exception as e:
             return f'Error executing {command}: {e}'
-    return f'Command "{command}" not recognized.'
+    return f'Command "{command}" not recognized. Available: {", ".join(get_available_commands())}'
 
 
 def handle_command(conn, command):
@@ -89,36 +126,26 @@ def send_keep_alive(conn):
 # ── Authentication ────────────────────────────────────────────────────────────
 
 def authenticate(conn):
-    """
-    Respond to the server's HMAC challenge.
-    1. Receive challenge bytes from server.
-    2. Compute HMAC-SHA256(shared_secret, challenge).
-    3. Send the hex digest back.
-    4. Wait for AUTH_OK or AUTH_FAIL.
-    Returns True if server accepted us.
-    """
     try:
         challenge = conn.recv(32)
         if not challenge or len(challenge) != 32:
             logging.error("Did not receive a valid challenge from server")
             return False
-
         response = hmac.new(SHARED_SECRET, challenge, hashlib.sha256).hexdigest().encode()
         conn.sendall(response)
-
         verdict = conn.recv(16).decode().strip()
         if verdict == 'AUTH_OK':
             logging.info("Authentication successful")
             return True
         else:
-            logging.error(f"Authentication rejected by server: {verdict}")
+            logging.error(f"Authentication rejected: {verdict}")
             return False
     except Exception as e:
         logging.error(f"Authentication error: {e}")
         return False
 
 
-# ── TLS context (client side) ─────────────────────────────────────────────────
+# ── TLS context ───────────────────────────────────────────────────────────────
 
 def build_ssl_context():
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -126,17 +153,36 @@ def build_ssl_context():
 
     cert_file = CONFIG.get('server', 'cert_file', fallback=None)
     if cert_file and os.path.exists(cert_file):
-        # Pin to the server's self-signed cert (recommended for internal tools)
         ctx.load_verify_locations(cert_file)
         ctx.verify_mode = ssl.CERT_REQUIRED
         logging.info(f"TLS: pinning to {cert_file}")
     else:
-        # Fall back to system CA store if no pinned cert is available.
-        # For production, always pin the cert.
         ctx.load_default_certs()
         logging.warning("TLS: no pinned cert found, using system CA store")
-
     return ctx
+
+
+# ── Backoff ───────────────────────────────────────────────────────────────────
+
+BACKOFF_BASE   = 5    # seconds - initial wait
+BACKOFF_MAX    = 300  # seconds - maximum wait (5 minutes)
+BACKOFF_FACTOR = 2    # multiply delay by this on each failure
+
+
+def backoff_wait(attempt):
+    """
+    Exponential backoff with a cap.
+    attempt 0 ->   5s
+    attempt 1 ->  10s
+    attempt 2 ->  20s
+    attempt 3 ->  40s
+    attempt 4 ->  80s
+    attempt 5 -> 160s
+    attempt 6 -> 300s (capped)
+    """
+    delay = min(BACKOFF_BASE * (BACKOFF_FACTOR ** attempt), BACKOFF_MAX)
+    logging.info(f"Reconnecting in {delay:.0f}s (attempt {attempt + 1})...")
+    time.sleep(delay)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -147,27 +193,31 @@ def start_client():
     interval = CONFIG.getint('client', 'connectivity_check_interval')
     ssl_ctx  = build_ssl_context()
 
+    attempt = 0  # reset to 0 on a successful connection
+
     while True:
         try:
             logging.info(f"Connecting to {host}:{port}")
             raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Wrap in TLS; server_hostname must match CN in the cert
             conn = ssl_ctx.wrap_socket(raw_sock, server_hostname='RAdmin Server')
             conn.connect((host, port))
             conn.settimeout(300)
             logging.info("TLS connection established")
 
             if not authenticate(conn):
-                logging.error("Authentication failed, retrying in %ds", RECONNECT_WAIT)
+                logging.error("Authentication failed")
                 conn.close()
-                time.sleep(RECONNECT_WAIT)
+                backoff_wait(attempt)
+                attempt += 1
                 continue
 
-            # Identify ourselves to the server
+            # Successful connection — reset backoff
+            attempt = 0
+            logging.info("Connected and authenticated. Backoff reset.")
+
             hostname = socket.gethostname()
             conn.sendall(f'HOSTNAME:{hostname}'.encode())
 
-            # Background threads
             threading.Thread(target=send_keep_alive, args=(conn,), daemon=True).start()
             threading.Thread(
                 target=periodic_connectivity_check,
@@ -175,11 +225,15 @@ def start_client():
                 daemon=True
             ).start()
 
-            # Command receive loop
             while True:
                 try:
-                    command = conn.recv(1024).decode().strip()
-                    logging.debug(f"Received command: {command}")
+                    data = conn.recv(1024)
+                    if not data:
+                        # Empty recv means the server closed the connection
+                        logging.warning("Server disconnected (empty recv)")
+                        break
+                    command = data.decode().strip()
+                    logging.debug(f"Received: {command}")
                     if command.lower() == 'exit':
                         break
                     if command:
@@ -196,13 +250,12 @@ def start_client():
                     break
 
             conn.close()
-            logging.info("Connection closed")
 
         except Exception as e:
             logging.error(f"Connection error: {e}")
 
-        logging.info(f"Reconnecting in {RECONNECT_WAIT}s...")
-        time.sleep(RECONNECT_WAIT)
+        backoff_wait(attempt)
+        attempt += 1
 
 
 if __name__ == '__main__':
