@@ -233,14 +233,31 @@ def print_hosts_file():
 
     ip_addresses = []
     try:
-        encoding = 'utf-16' if IS_WINDOWS else 'utf-8'
-        with open(hosts_path, 'r', encoding=encoding) as f:
-            for line in f:
-                cleaned = line.replace('\x00', '').strip()
-                if not cleaned.startswith('#') and cleaned:
-                    parts = cleaned.split()
-                    if len(parts) >= 2:
-                        ip_addresses.append(parts[0])
+        if IS_WINDOWS:
+            # Read raw bytes and detect encoding — Windows hosts file may be
+            # UTF-16 with BOM, UTF-16 without BOM, or plain ASCII/UTF-8
+            with open(hosts_path, 'rb') as f:
+                raw = f.read()
+            if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
+                # UTF-16 with BOM
+                content = raw.decode('utf-16')
+            elif b'\x00' in raw:
+                # UTF-16 without BOM — assume little-endian
+                content = raw.decode('utf-16-le')
+            else:
+                # Plain ASCII or UTF-8
+                content = raw.decode('utf-8', errors='replace')
+            lines = content.splitlines()
+        else:
+            with open(hosts_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+        for line in lines:
+            cleaned = line.strip()
+            if not cleaned.startswith('#') and cleaned:
+                parts = cleaned.split()
+                if len(parts) >= 2:
+                    ip_addresses.append(parts[0])
     except Exception as e:
         logging.error(f'Error reading hosts file: {e}')
     return ip_addresses
