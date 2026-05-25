@@ -264,7 +264,17 @@ def print_hosts_file():
 
 
 def _is_safe_ip(value):
-    return bool(re.match(r'^[a-zA-Z0-9.\-:]+$', value))
+    """
+    Only allow valid IPv4, IPv6, or dotted hostnames.
+    Rejects single-word hostnames like 'dhcp', 'lmhosts', 'pnceptmapper'.
+    """
+    # IPv4: four dotted octets
+    ipv4 = re.match(r'^(\d{1,3}\.){3}\d{1,3}$', value)
+    # IPv6: contains colons
+    ipv6 = re.match(r'^[0-9a-fA-F:]+$', value) and ':' in value
+    # Dotted hostname (e.g. host.domain.local) — must have at least one dot
+    dotted = re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+$', value)
+    return bool(ipv4 or ipv6 or dotted)
 
 
 def test_connectivity(ip_addresses):
