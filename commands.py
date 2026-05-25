@@ -303,7 +303,9 @@ def periodic_connectivity_check(client_socket, interval):
             lines = '\n'.join(f'{ip} is {status}' for ip, status in connectivity_results)
             message = f'CONNECTIVITY_RESULTS_START\n{lines}\nCONNECTIVITY_RESULTS_END'
             try:
-                client_socket.send(message.encode())
+                encoded = message.encode('utf-8')
+                header  = len(encoded).to_bytes(4, byteorder='big')
+                client_socket.sendall(header + encoded)
             except OSError as e:
                 logging.error(f'Error sending connectivity results: {e}')
         time.sleep(interval)

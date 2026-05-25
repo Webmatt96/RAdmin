@@ -69,6 +69,36 @@ def authenticate_client(conn):
         conn.settimeout(KEEP_ALIVE_SEC)
 
 
+# ── Message framing ───────────────────────────────────────────────────────────
+
+def send_message(conn, text):
+    """Send a length-prefixed message."""
+    encoded = text.encode('utf-8')
+    header  = len(encoded).to_bytes(4, byteorder='big')
+    conn.sendall(header + encoded)
+
+
+def recv_message(conn):
+    """Receive a complete length-prefixed message. Returns None on disconnect."""
+    header = b''
+    while len(header) < 4:
+        chunk = conn.recv(4 - len(header))
+        if not chunk:
+            return None
+        header += chunk
+
+    length = int.from_bytes(header, byteorder='big')
+
+    payload = b''
+    while len(payload) < length:
+        chunk = conn.recv(min(4096, length - len(payload)))
+        if not chunk:
+            return None
+        payload += chunk
+
+    return payload.decode('utf-8')
+
+
 # ── Client handler ────────────────────────────────────────────────────────────
 
 def handle_client(conn, addr):
@@ -84,7 +114,10 @@ def handle_client(conn, addr):
 
     while True:
         try:
-            data = conn.recv(4096).decode().strip()
+            data = recv_message(conn)
+            if data is None:
+                break
+            data = data.strip()
             if not data:
                 continue
             if data == 'KEEP_ALIVE':
@@ -111,7 +144,7 @@ def handle_client(conn, addr):
                 print_prompt()
             else:
                 result = execute_server_command(data)
-                conn.sendall(result.encode())
+                send_message(conn, result)
         except Exception as e:
             logging.error(f"Error with client {hostname or addr}: {e}")
             break
@@ -165,7 +198,7 @@ def send_command(hostname, command):
         print(f"Client '{hostname}' not found. Use 'list' to see connected clients.")
         return
     try:
-        conn.sendall(command.encode())
+        send_message(conn, command)
         logging.info(f"Sent '{command}' to {hostname}")
         print(f"Command '{command}' sent to {hostname}. Waiting for result...")
     except OSError as e:

