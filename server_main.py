@@ -412,6 +412,12 @@ def accept_clients(server_socket, ssl_context):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='RAdmin Socket Server')
+    parser.add_argument('--service', action='store_true',
+                        help='Run in service mode (no interactive CLI)')
+    args = parser.parse_args()
+
     cert = CONFIG.get('server', 'cert_file')
     key  = CONFIG.get('server', 'key_file')
     port = CONFIG.getint('server', 'port')
@@ -434,4 +440,9 @@ if __name__ == '__main__':
     t = threading.Thread(target=accept_clients, args=(raw_sock, ssl_context), daemon=True)
     t.start()
 
-    cli_loop()
+    if args.service:
+        # Service mode — block forever without CLI
+        logging.info("Running in service mode")
+        threading.Event().wait()
+    else:
+        cli_loop()
