@@ -162,7 +162,7 @@ def service_start(service_name=None):
     if IS_WINDOWS:
         return _run_ps(f"Start-Service -Name '{service_name}'")
     else:
-        return _run(['sudo', 'systemctl', 'start', service_name])
+        return _run(['systemctl', 'start', service_name])
 
 
 def service_stop(service_name=None):
@@ -172,7 +172,7 @@ def service_stop(service_name=None):
     if IS_WINDOWS:
         return _run_ps(f"Stop-Service -Name '{service_name}'")
     else:
-        return _run(['sudo', 'systemctl', 'stop', service_name])
+        return _run(['systemctl', 'stop', service_name])
 
 
 # ── Log Tailing ───────────────────────────────────────────────────────────────
@@ -329,7 +329,7 @@ def reboot():
     if IS_WINDOWS:
         return _run_ps('Restart-Computer -Force')
     else:
-        return _run(['sudo', 'shutdown', '-r', 'now'])
+        return _run(['shutdown', '-r', 'now'])
 
 
 def failover_cluster_validation():
