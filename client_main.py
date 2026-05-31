@@ -236,7 +236,7 @@ def start_client():
             raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             conn = ssl_ctx.wrap_socket(raw_sock, server_hostname='RAdmin Server')
             conn.connect((host, port))
-            conn.settimeout(300)
+            conn.settimeout(None)  # No timeout
             logging.info("TLS connection established")
 
             if not authenticate(conn):
